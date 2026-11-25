@@ -59,7 +59,24 @@
   .summary { margin-top:18px; padding:12px; border-radius:10px; background:rgba(128,128,128,.12); display:grid;
              grid-template-columns:1fr 1fr; gap:8px; text-align:center; }
   .summary b { display:block; font-size:1.3rem; }
+  .inline { display:flex; gap:8px; align-items:stretch; }
+  .inline input { margin-top:6px; flex:1; min-width:0; }
+  .small { margin-top:6px; padding:0 18px; border:0; border-radius:10px; background:var(--accent); color:#fff;
+           font-weight:600; font-size:1rem; font-family:inherit; }
+  .note { margin-top:6px; font-size:.8rem; }
+  .user { border:1px solid var(--line); border-radius:12px; padding:12px; margin-top:10px; }
+  .user b { display:block; word-break:break-word; }
+  .user .muted { word-break:break-all; }
+  .badge { display:inline-block; margin:6px 6px 0 0; padding:2px 8px; border-radius:999px; font-size:.7rem; font-weight:600;
+           background:rgba(128,128,128,.2); }
+  .badge.warn { background:rgba(207,34,46,.15); color:var(--err); }
+  .actions { display:flex; gap:8px; margin-top:10px; }
+  .actions button { flex:1; padding:10px 4px; border-radius:8px; border:1px solid var(--line); background:transparent;
+                    color:var(--text); font-size:.8rem; font-family:inherit; }
+  .actions button.danger { color:var(--err); }
   .link { background:none; border:0; color:var(--muted); margin-top:12px; width:100%; padding:8px; }
+  #msg:not(:empty) { position:sticky; bottom:0; background:var(--card); padding:8px 0; }
+  .card.login #msg:not(:empty) { background:transparent; }
   #msg { min-height:1.3em; margin-top:12px; text-align:center; font-size:.95rem; }
   .err { color:var(--err); } .ok { color:var(--ok); }
   .hidden { display:none; }
@@ -139,7 +156,32 @@
       <div><span class="muted">In-hrs</span><b id="inVal">--</b></div>
     </div>
 
+    <button class="link hidden" id="adminBtn">Admin: manage users</button>
     <button class="link" id="logout">Log out</button>
+  </div>
+
+  <!-- Admin (only reachable when the signed-in user is an admin; the script enforces this too) -->
+  <div id="adminView" class="hidden">
+    <h1>Admin</h1>
+    <div class="muted">Manage staff and registration</div>
+
+    <label for="adminCode">Registration code</label>
+    <div class="inline">
+      <input type="text" id="adminCode" autocapitalize="characters" autocomplete="off" maxlength="20" placeholder="Off">
+      <button class="small" id="codeSave">Save</button>
+    </div>
+    <div class="muted note">Staff need this code to register. Clear it to switch registration off.</div>
+
+    <label for="addName">Add a user</label>
+    <input type="text" id="addName" placeholder="Full name" maxlength="40" autocomplete="off">
+    <input type="email" id="addEmail" placeholder="name@company.com" maxlength="80" autocomplete="off" autocapitalize="none" style="margin-top:8px">
+    <button class="save" id="addBtn" style="margin-top:12px">Add user</button>
+    <div class="muted note">They then tap "First time? Register" and use this exact name and email with the code above.</div>
+
+    <label>Users <span id="userCount"></span></label>
+    <div id="userList"></div>
+
+    <button class="link" id="adminBack">Back</button>
   </div>
 
   <div id="msg"></div>
@@ -242,7 +284,7 @@
 
   // Switch between the email, PIN, register and entry screens.
   function show(view) {
-    ['emailView', 'loginView', 'registerView', 'formView'].forEach(function (v) { $(v).classList.toggle('hidden', v !== view); });
+    ['emailView', 'loginView', 'registerView', 'formView', 'adminView'].forEach(function (v) { $(v).classList.toggle('hidden', v !== view); });
     $('card').classList.toggle('login', view === 'loginView' || view === 'emailView');
     msg('');
   }
@@ -274,6 +316,7 @@
   function enter(r) {
     store('email', email); // signed in: remember this email on the phone
     show('formView');
+    $('adminBtn').classList.toggle('hidden', !r.admin);
     $('hello').textContent = 'Hi, ' + r.name;
     $('date').value = r.entry.date;
     fill(r.entry);
@@ -301,6 +344,82 @@
       })
       .catch(function (e) { msg(e.message, 'err'); })
       .then(function () { $('registerBtn').disabled = false; });
+  };
+
+  // ---- admin ----
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text; // textContent, never innerHTML: names come from users
+    return n;
+  }
+
+  function adminDo(body, okText) {
+    msg('Working…');
+    return api(body)
+      .then(function (st) { renderAdmin(st); msg(okText || '', 'ok'); return true; })
+      .catch(function (e) { msg(e.message, 'err'); return false; });
+  }
+
+  function renderAdmin(st) {
+    $('adminCode').value = st.code;
+    $('userCount').textContent = '(' + st.users.length + ')';
+    var list = $('userList');
+    list.innerHTML = '';
+    st.users.forEach(function (u) {
+      var me = u.email === email;
+      var card = el('div', 'user');
+      card.appendChild(el('b', '', u.name));
+      card.appendChild(el('div', 'muted', u.email));
+      if (me) card.appendChild(el('span', 'badge', 'You'));
+      if (u.admin) card.appendChild(el('span', 'badge', 'Admin'));
+      if (!u.hasPin) card.appendChild(el('span', 'badge warn', 'PIN not set'));
+      if (!u.active) card.appendChild(el('span', 'badge warn', 'Inactive'));
+
+      if (!me) { // admins manage their own account in the sheet, so they can't lock themselves out here
+        var actions = el('div', 'actions');
+        var reset = el('button', '', 'Reset PIN');
+        reset.onclick = function () {
+          if (confirm('Reset the PIN for ' + u.name + '?\n\nThey will need to register again (same name and email, plus the registration code) to choose a new PIN.')) {
+            adminDo({ action: 'admin_reset', target: u.email }, 'PIN reset. ' + u.name + ' can register again.');
+          }
+        };
+        var toggle = el('button', '', u.active ? 'Deactivate' : 'Activate');
+        toggle.onclick = function () {
+          if (u.active && !confirm('Deactivate ' + u.name + '? They will not be able to sign in.')) return;
+          adminDo({ action: 'admin_active', target: u.email, active: !u.active }, u.name + (u.active ? ' deactivated.' : ' activated.'));
+        };
+        var del = el('button', 'danger', 'Delete');
+        del.onclick = function () {
+          if (confirm('Delete ' + u.name + '?\n\nTheir login is removed. Their timesheet entries stay in the sheet.')) {
+            adminDo({ action: 'admin_delete', target: u.email }, u.name + ' deleted.');
+          }
+        };
+        actions.appendChild(reset); actions.appendChild(toggle); actions.appendChild(del);
+        card.appendChild(actions);
+      }
+      list.appendChild(card);
+    });
+  }
+
+  $('adminBtn').onclick = function () {
+    show('adminView');
+    adminDo({ action: 'admin_list' }, '');
+  };
+  $('adminBack').onclick = function () { show('formView'); };
+
+  $('codeSave').onclick = function () {
+    var c = $('adminCode').value.trim();
+    adminDo({ action: 'admin_code', code: c }, c ? 'Registration code saved.' : 'Registration is switched off.');
+  };
+
+  $('addBtn').onclick = function () {
+    var name = $('addName').value.trim(), mail = $('addEmail').value.trim();
+    if (!name) return msg('Enter a name.', 'err');
+    if (!EMAIL_RE.test(mail)) return msg('Enter a valid email address.', 'err');
+    adminDo({ action: 'admin_add', name: name, target: mail }, name + ' added. They can now register.').then(function (ok) {
+      if (ok) { $('addName').value = ''; $('addEmail').value = ''; }
+    });
   };
 
   function fill(en) {

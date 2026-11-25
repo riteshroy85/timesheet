@@ -3,7 +3,7 @@
  * and calls this web app with POST requests.
  *
  * Bound to a Google Sheet with three tabs:
- *   Users      : Name | Email | PIN | Active (TRUE/FALSE)
+ *   Users      : Name | Email | PIN | Active (TRUE/FALSE) | Admin (TRUE for admins)
  *   Settings   : A1 "Registration code", B1 the code staff need to register
  *   Timesheet  : Name | Email | Date | Day | Start Time | End Time | Break (hrs) | Total Hrs | In-Hrs   (created automatically)
  * An employee is identified by name + email. Email (lower-case) is the unique key; the name must match it.
@@ -22,13 +22,16 @@ var PIN_MAX = 8;
 // Timesheet column numbers
 var C = { NAME: 1, EMAIL: 2, DATE: 3, DAY: 4, START: 5, END: 6, BREAK: 7, TOTAL: 8, IN: 9 };
 var HEADERS = ['Name', 'Email', 'Date', 'Day', 'Start Time', 'End Time', 'Break (hrs)', 'Total Hrs', 'In-Hrs'];
-var USER_HEADERS = ['Name', 'Email', 'PIN', 'Active'];
+var USER_HEADERS = ['Name', 'Email', 'PIN', 'Active', 'Admin'];
 var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Run once from the Apps Script editor (select "setup" > Run) on a blank Sheet.
  * Safe to run again: it also upgrades older Users / Timesheet tabs to the current columns
  * (existing people get a blank Email that you then fill in).
+ * No default user is created. To make yourself the first admin, add a row to Users:
+ *   Your Name | your@email | (leave PIN blank) | TRUE | TRUE
+ * then open the app, tap "First time? Register" and set your PIN with the Settings!B1 code.
  */
 function setup() {
   var ss = SpreadsheetApp.getActive();
@@ -36,7 +39,6 @@ function setup() {
   var users = ss.getSheetByName(USERS_SHEET) || ss.insertSheet(USERS_SHEET);
   if (users.getLastRow() === 0) {
     users.appendRow(USER_HEADERS);
-    users.appendRow(['Sample User', 'sample@example.com', '123456', 'TRUE']);
     users.setFrozenRows(1);
   } else if (String(users.getRange('B1').getValue()) === 'PIN') {
     users.insertColumnAfter(1); // older layout: Name | PIN | Active
@@ -77,9 +79,10 @@ function doGet() {
 /**
  * Body (JSON sent as text/plain): { action, email, pin, deviceId, ... }
  *   register : name, email, code, newPin -> { name, entry }  (no pin needed; creates or claims a user)
- *   login : email + pin -> { name, entry }                   (entry for today; PINs need not be unique)
+ *   login : email + pin -> { name, admin, entry }            (entry for today; PINs need not be unique)
  *   get   : date                -> entry
  *   save  : date, start, end, breakHrs -> entry
+ *   admin_list | admin_add | admin_reset | admin_active | admin_delete | admin_code   (admins only)
  */
 function doPost(e) {
   try {
@@ -87,11 +90,15 @@ function doPost(e) {
     var deviceId = String(req.deviceId || '').slice(0, 64);
     if (req.action === 'register') {
       var created = register_(req, deviceId);
-      return json_({ ok: true, data: { name: created.name, entry: entry_(created.email, today_()) } });
+      return json_({ ok: true, data: { name: created.name, admin: created.admin, entry: entry_(created.email, today_()) } });
     }
     var user = authenticate_(req.email, req.pin, deviceId);
+    if (String(req.action).indexOf('admin_') === 0) {
+      if (!user.admin) throw new Error('Admins only.');
+      return json_({ ok: true, data: admin_(user, req) });
+    }
     if (req.action === 'login') {
-      return json_({ ok: true, data: { name: user.name, entry: entry_(user.email, today_()) } });
+      return json_({ ok: true, data: { name: user.name, admin: user.admin, entry: entry_(user.email, today_()) } });
     } else if (req.action === 'get') {
       return json_({ ok: true, data: entry_(user.email, checkDate_(req.date)) });
     } else if (req.action === 'save') {
@@ -140,6 +147,7 @@ function register_(req, deviceId) {
     var sheet = SpreadsheetApp.getActive().getSheetByName(USERS_SHEET);
     var rows = sheet.getDataRange().getDisplayValues();
     var claimRow = 0;
+    var isAdmin = false;
     for (var i = 1; i < rows.length; i++) {
       var rowName = String(rows[i][0]).trim();
       var rowEmail = String(rows[i][1]).trim().toLowerCase();
@@ -150,20 +158,121 @@ function register_(req, deviceId) {
           throw new Error('The name does not match the one on file for this email.');
         }
         claimRow = i + 1;
+        isAdmin = isTrue_(rows[i][4]);
         name = rowName; // keep the existing spelling so old timesheet rows still match
       }
     }
     if (claimRow) {
       sheet.getRange(claimRow, 3, 1, 2).setValues([[newPin, 'TRUE']]);
     } else {
-      sheet.appendRow([name, email, newPin, 'TRUE']);
+      sheet.appendRow([name, email, newPin, 'TRUE', '']);
       sheet.getRange(sheet.getLastRow(), 2, 1, 2).setNumberFormat('@').setValues([[email, newPin]]);
     }
     SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
-  return { name: name, email: email };
+  return { name: name, email: email, admin: isAdmin };
+}
+
+function isTrue_(v) { return String(v).trim().toUpperCase() === 'TRUE'; }
+
+// ---------- admin ----------
+
+/**
+ * Admin actions. `req.target` is the email of the user being changed (req.email is the signed-in admin).
+ * Admins cannot reset, deactivate or delete themselves here, so the last admin can't lock themselves out.
+ * Returns the refreshed { users, code } list.
+ */
+function admin_(admin, req) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(USERS_SHEET);
+    var target = String(req.target || '').trim().toLowerCase();
+    var row;
+
+    switch (req.action) {
+      case 'admin_list':
+        break;
+
+      case 'admin_add':
+        var name = String(req.name || '').replace(/\s+/g, ' ').trim();
+        if (!name || name.length > 40) throw new Error('Enter a name (up to 40 characters).');
+        if (!EMAIL_RE.test(target) || target.length > 80) throw new Error('Enter a valid email address.');
+        if (userRow_(sheet, target)) throw new Error('That email is already in the list.');
+        sheet.appendRow([name, target, '', 'TRUE', '']);
+        sheet.getRange(sheet.getLastRow(), 2, 1, 2).setNumberFormat('@').setValues([[target, '']]);
+        break;
+
+      case 'admin_reset':   // clears the PIN; the person registers again (name + email + code) and picks a new one
+        row = userRowFor_(sheet, target, admin);
+        sheet.getRange(row, 3).setValue('');
+        CacheService.getScriptCache().remove('fails_e_' + target); // lift any lockout too
+        break;
+
+      case 'admin_active':
+        row = userRowFor_(sheet, target, admin);
+        sheet.getRange(row, 4).setValue(req.active ? 'TRUE' : 'FALSE');
+        break;
+
+      case 'admin_delete':  // removes the login only; their timesheet rows stay in the Timesheet tab
+        row = userRowFor_(sheet, target, admin);
+        sheet.deleteRow(row);
+        break;
+
+      case 'admin_code':
+        var code = String(req.code || '').trim();
+        if (code && !/^[A-Za-z0-9]{4,20}$/.test(code)) throw new Error('Code must be 4 to 20 letters or digits.');
+        var settings = ss.getSheetByName(SETTINGS_SHEET) || ss.insertSheet(SETTINGS_SHEET);
+        settings.getRange('A1').setValue('Registration code');
+        settings.getRange('B1').setNumberFormat('@').setValue(code.toUpperCase());
+        break;
+
+      default:
+        throw new Error('Unknown action.');
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  return adminState_();
+}
+
+function adminState_() {
+  var ss = SpreadsheetApp.getActive();
+  var rows = ss.getSheetByName(USERS_SHEET).getDataRange().getDisplayValues();
+  var users = [];
+  for (var i = 1; i < rows.length; i++) {
+    if (!String(rows[i][1]).trim()) continue;
+    users.push({
+      name: String(rows[i][0]).trim(),
+      email: String(rows[i][1]).trim().toLowerCase(),
+      hasPin: !!String(rows[i][2]).trim(),
+      active: String(rows[i][3]).toUpperCase() !== 'FALSE',
+      admin: isTrue_(rows[i][4])
+    });
+  }
+  var settings = ss.getSheetByName(SETTINGS_SHEET);
+  return { users: users, code: settings ? String(settings.getRange('B1').getDisplayValue()).trim() : '' };
+}
+
+/** Row number (1-based) of the user with this email, or 0. */
+function userRow_(sheet, email) {
+  var rows = sheet.getDataRange().getDisplayValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][1]).trim().toLowerCase() === email) return i + 1;
+  }
+  return 0;
+}
+
+/** Like userRow_ but throws if the user doesn't exist or is the admin themselves. */
+function userRowFor_(sheet, email, admin) {
+  if (email === admin.email) throw new Error('You cannot change your own account here.');
+  var row = userRow_(sheet, email);
+  if (!row) throw new Error('User not found.');
+  return row;
 }
 
 /** Writes (or overwrites) the user's row for the given date. End and break are optional. */
@@ -207,7 +316,7 @@ function save_(user, req) {
 
 /**
  * Finds the user by email and checks the PIN. PINs need not be unique: the email picks the person.
- * Returns { name, email }. A wrong email and a wrong PIN give the same error, so the app does not
+ * Returns { name, email, admin }. A wrong email and a wrong PIN give the same error, so the app does not
  * reveal which emails exist.
  */
 function authenticate_(email, pin, deviceId) {
@@ -222,7 +331,7 @@ function authenticate_(email, pin, deviceId) {
     var rowPin = String(rows[i][2]).trim();
     if (email && active && rowPin && String(rows[i][1]).trim().toLowerCase() === email && rowPin === pin) {
       clearFails_(keys);
-      return { name: String(rows[i][0]).trim(), email: email };
+      return { name: String(rows[i][0]).trim(), email: email, admin: isTrue_(rows[i][4]) };
     }
   }
   recordFail_(keys);

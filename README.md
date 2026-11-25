@@ -12,13 +12,30 @@ Hosting the screen on GitHub Pages (instead of serving it from Apps Script) avoi
 1. Open your Google Sheet > **Extensions > Apps Script**.
 2. Replace `Code.gs` with [apps-script/Code.gs](apps-script/Code.gs). (No HTML file is needed in Apps Script.)
 3. Select `setup` in the toolbar and click **Run** (approve the permissions). This creates the `Users` and `Timesheet` tabs.
-4. Staff can register themselves, or you can add them by hand in `Users` as `Name | Email | PIN | TRUE` (leave PIN blank to let them set it). PINs do not need to be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
+4. Make yourself the first admin: in the `Users` tab add a row `Your Name | your@email | (blank PIN) | TRUE | TRUE`
+   (columns: Name, Email, PIN, Active, Admin). Then open the app, tap **First time? Register** and use that exact
+   name and email with the code from `Settings!B1` to choose your PIN. No default user is created.
+   Delete any old sample row. Keep this sheet's sharing restricted.
+
+### Admin screen
+
+Anyone with `TRUE` in the **Admin** column sees **Admin: manage users** after signing in. From there an admin can:
+
+- **Add a user** (name + email). They then register with the code and choose their own PIN.
+- **Reset PIN**: clears the PIN (and any lockout). The person registers again with the same name and email and picks a new PIN, and their timesheet history stays attached. Admins never see anyone's PIN.
+- **Deactivate / Activate**: blocks or restores sign-in without deleting anything.
+- **Delete**: removes the login. Their rows in the `Timesheet` tab stay.
+- **View or change the registration code**, or clear it to switch registration off.
+
+Admins can't reset, deactivate or delete themselves from the screen (so the last admin can't lock themselves out). To make
+someone an admin, or to change your own account, edit the `Users` tab directly. The script checks the admin flag on every
+admin request, so hiding the button isn't the only protection.
 
 ### Self-registration
 
 On first use staff tap **First time? Register**, enter their name, **email**, the **registration code**, and choose their own 6 to 8 digit PIN (change `PIN_MIN` / `PIN_MAX` at the top of `Code.gs` to adjust).
 
-- The code is in the `Settings` tab (cell B1), created by `setup`. Change it any time. Clear the cell to switch registration off.
+- The code is in the `Settings` tab (cell B1), created by `setup`. Admins can also see and change it in the Admin screen. Clear it to switch registration off.
 - Share the code only with your team. Anyone who has the code and the link can register.
 - Wrong codes are counted separately from wrong PINs: 5 per phone, 30 in total, then registration pauses for 10 minutes.
 - **Forgotten PIN:** clear that person's PIN cell in `Users`. They register again with the same name and email and pick a new PIN, and their old timesheet rows stay attached.
