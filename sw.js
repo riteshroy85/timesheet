@@ -1,6 +1,6 @@
 // Minimal service worker: makes the app installable and loads the screen fast.
 // API calls are never cached; the app needs a connection to save times.
-var CACHE = 'timesheet-v1';
+var CACHE = 'timesheet-v2';
 var SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', function (e) {
