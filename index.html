@@ -76,6 +76,28 @@
     <div class="dots" id="dots"></div>
     <div class="pad" id="pad"></div>
     <button class="unlock" id="unlock" disabled>Unlock</button>
+    <button class="link" id="toRegister">First time? Register</button>
+  </div>
+
+  <!-- First-time registration -->
+  <div id="registerView" class="hidden">
+    <h1>Register</h1>
+    <div class="muted">Create your PIN. You need the registration code from your admin.</div>
+
+    <label for="regName">Your name</label>
+    <input type="text" id="regName" autocomplete="name" maxlength="40">
+
+    <label for="regCode">Registration code</label>
+    <input type="text" id="regCode" autocapitalize="characters" autocomplete="off" maxlength="20">
+
+    <label for="regPin">Choose a PIN (4 to 8 digits)</label>
+    <input type="password" id="regPin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+
+    <label for="regPin2">Confirm PIN</label>
+    <input type="password" id="regPin2" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+
+    <button class="save" id="registerBtn">Create account</button>
+    <button class="link" id="toLogin">Back to login</button>
   </div>
 
   <!-- Entry form -->
@@ -187,16 +209,43 @@
   function submitPin() {
     if (!pin) return;
     msg('Checking…');
-    api({ action: 'login' }).then(function (r) {
-      msg('');
-      $('card').classList.remove('login');
-      $('loginView').classList.add('hidden');
-      $('formView').classList.remove('hidden');
-      $('hello').textContent = 'Hi, ' + r.name;
-      $('date').value = r.entry.date;
-      fill(r.entry);
-    }).catch(function (e) { wrongPin(e.message); });
+    api({ action: 'login' }).then(enter).catch(function (e) { wrongPin(e.message); });
   }
+
+  // Switch between the login, register and entry screens.
+  function show(view) {
+    ['loginView', 'registerView', 'formView'].forEach(function (v) { $(v).classList.toggle('hidden', v !== view); });
+    $('card').classList.toggle('login', view === 'loginView');
+    msg('');
+  }
+
+  function enter(r) {
+    show('formView');
+    $('hello').textContent = 'Hi, ' + r.name;
+    $('date').value = r.entry.date;
+    fill(r.entry);
+  }
+
+  $('toRegister').onclick = function () { pin = ''; drawDots(); show('registerView'); };
+  $('toLogin').onclick = function () { show('loginView'); };
+
+  $('registerBtn').onclick = function () {
+    var p = $('regPin').value;
+    if (!$('regName').value.trim()) return msg('Enter your name.', 'err');
+    if (!$('regCode').value.trim()) return msg('Enter the registration code.', 'err');
+    if (!/^\d{4,8}$/.test(p)) return msg('PIN must be 4 to 8 digits.', 'err');
+    if (p !== $('regPin2').value) return msg('The two PINs do not match.', 'err');
+    $('registerBtn').disabled = true;
+    msg('Creating account…');
+    api({ action: 'register', name: $('regName').value, code: $('regCode').value, newPin: p })
+      .then(function (r) {
+        pin = p;  // signed in with the new PIN
+        ['regName', 'regCode', 'regPin', 'regPin2'].forEach(function (id) { $(id).value = ''; });
+        enter(r);
+      })
+      .catch(function (e) { msg(e.message, 'err'); })
+      .then(function () { $('registerBtn').disabled = false; });
+  };
 
   function fill(en) {
     $('start').value = en.start;
@@ -227,10 +276,8 @@
   };
 
   $('logout').onclick = function () {
-    pin = ''; drawDots(); msg('');
-    $('card').classList.add('login');
-    $('formView').classList.add('hidden');
-    $('loginView').classList.remove('hidden');
+    pin = ''; drawDots();
+    show('loginView');
   };
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});

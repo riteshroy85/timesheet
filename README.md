@@ -12,7 +12,17 @@ Hosting the screen on GitHub Pages (instead of serving it from Apps Script) avoi
 1. Open your Google Sheet > **Extensions > Apps Script**.
 2. Replace `Code.gs` with [apps-script/Code.gs](apps-script/Code.gs). (No HTML file is needed in Apps Script.)
 3. Select `setup` in the toolbar and click **Run** (approve the permissions). This creates the `Users` and `Timesheet` tabs.
-4. In `Users`, replace the sample row with one row per person: `Name | PIN | TRUE`. PINs must be unique; `FALSE` disables someone. Keep this sheet's sharing restricted.
+4. Staff can register themselves, or you can add them by hand in `Users` as `Name | PIN | TRUE`. PINs must be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
+
+### Self-registration
+
+On first use staff tap **First time? Register**, enter their name, the **registration code**, and choose their own 4 to 8 digit PIN.
+
+- The code is in the `Settings` tab (cell B1), created by `setup`. Change it any time. Clear the cell to switch registration off.
+- Share the code only with your team. Anyone who has the code and the link can register.
+- Wrong codes count towards the same lockout as wrong PINs.
+- **Forgotten PIN:** clear that person's PIN cell in `Users`. They register again with the same name and pick a new PIN, and their old timesheet rows stay attached.
+- A name that already has a PIN can't be registered again, so one person can't take over another's account.
 5. **Deploy > New deployment > Web app**: Execute as **Me**, Who has access **Anyone**. Copy the URL (ends in `/exec`).
 
 ## 2. Put the URL in the screen

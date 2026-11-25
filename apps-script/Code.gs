@@ -10,6 +10,7 @@
 
 var USERS_SHEET = 'Users';
 var LOG_SHEET = 'Timesheet';
+var SETTINGS_SHEET = 'Settings';
 var MAX_FAILS = 5;           // wrong PINs allowed per device...
 var MAX_FAILS_GLOBAL = 30;   // ...and across all devices, before locking out
 var LOCKOUT_SECONDS = 600;
@@ -34,6 +35,15 @@ function setup() {
   }
   styleHeader_(users.getRange(1, 1, 1, 3));
 
+  // Settings: the registration code staff need to create their own PIN. Blank it to switch registration off.
+  var settings = ss.getSheetByName(SETTINGS_SHEET) || ss.insertSheet(SETTINGS_SHEET);
+  if (settings.getLastRow() === 0) {
+    settings.appendRow(['Registration code', Math.random().toString(36).slice(2, 8).toUpperCase()]);
+    settings.getRange('B1').setNumberFormat('@');
+    settings.getRange('A1').setFontWeight('bold');
+    settings.setColumnWidth(1, 160);
+  }
+
   var log = logSheet_();
   log.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
   styleHeader_(log.getRange(1, 1, 1, HEADERS.length));
@@ -52,6 +62,7 @@ function doGet() {
 
 /**
  * Body (JSON sent as text/plain): { action, pin, deviceId, ... }
+ *   register : name, code, newPin -> { name, entry }  (no pin needed; creates or claims a user)
  *   login : -> { name, entry }                      (entry for today)
  *   get   : date                -> entry
  *   save  : date, start, end, breakHrs -> entry
@@ -61,6 +72,10 @@ function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
     var deviceId = String(req.deviceId || '').slice(0, 64);
+    if (req.action === 'register') {
+      var name = register_(req, deviceId);
+      return json_({ ok: true, data: { name: name, entry: entry_(name, today_()) } });
+    }
     var user = authenticate_(req.pin, deviceId);
     if (req.action === 'login') {
       out = { ok: true, data: { name: user.name, entry: entry_(user.name, today_()) } };
@@ -74,7 +89,61 @@ function doPost(e) {
   } catch (err) {
     out = { ok: false, error: String(err.message || err) };
   }
-  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+  return json_(out);
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * First-time sign-up: needs the registration code from the Settings tab.
+ * Creates a new user, or claims an existing name whose PIN cell is blank (admin PIN reset).
+ * Returns the saved name.
+ */
+function register_(req, deviceId) {
+  checkLockout_(deviceId);
+
+  var name = String(req.name || '').replace(/\s+/g, ' ').trim();
+  var newPin = String(req.newPin || '').trim();
+  if (!name || name.length > 40) throw new Error('Enter your name (up to 40 characters).');
+  if (!/^\d{4,8}$/.test(newPin)) throw new Error('PIN must be 4 to 8 digits.');
+
+  var settings = SpreadsheetApp.getActive().getSheetByName(SETTINGS_SHEET);
+  var code = settings ? String(settings.getRange('B1').getDisplayValue()).trim() : '';
+  if (!code) throw new Error('Registration is switched off. Ask your admin.');
+  if (String(req.code || '').trim().toUpperCase() !== code.toUpperCase()) {
+    recordFail_(deviceId);
+    throw new Error('Incorrect registration code.');
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sheet = SpreadsheetApp.getActive().getSheetByName(USERS_SHEET);
+    var rows = sheet.getDataRange().getDisplayValues();
+    var claimRow = 0;
+    for (var i = 1; i < rows.length; i++) {
+      var rowName = String(rows[i][0]).trim();
+      var rowPin = String(rows[i][1]).trim();
+      if (rowPin === newPin) throw new Error('That PIN is already in use. Choose a different one.');
+      if (rowName.toLowerCase() === name.toLowerCase()) {
+        if (rowPin) throw new Error('That name is already registered. Ask your admin to reset your PIN.');
+        claimRow = i + 1;
+        name = rowName; // keep the existing spelling so old timesheet rows still match
+      }
+    }
+    if (claimRow) {
+      sheet.getRange(claimRow, 2, 1, 2).setValues([[newPin, 'TRUE']]);
+    } else {
+      sheet.appendRow([name, newPin, 'TRUE']);
+      sheet.getRange(sheet.getLastRow(), 2).setNumberFormat('@').setValue(newPin);
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+  return name;
 }
 
 /** Writes (or overwrites) the user's row for the given date. End and break are optional. */
@@ -118,25 +187,32 @@ function save_(name, req) {
 
 function authenticate_(pin, deviceId) {
   pin = String(pin || '').trim();
-  var cache = CacheService.getScriptCache();
-  var devKey = 'fails_' + deviceId;
-  var devFails = Number(cache.get(devKey) || 0);
-  var globalFails = Number(cache.get('fails_all') || 0);
-  if (devFails >= MAX_FAILS || globalFails >= MAX_FAILS_GLOBAL) {
-    throw new Error('Too many wrong attempts. Try again in a few minutes.');
-  }
+  checkLockout_(deviceId);
 
   var rows = SpreadsheetApp.getActive().getSheetByName(USERS_SHEET).getDataRange().getDisplayValues();
   for (var i = 1; i < rows.length; i++) {
     var active = String(rows[i][2]).toUpperCase() !== 'FALSE';
     if (active && pin && String(rows[i][1]).trim() === pin) {
-      cache.remove(devKey);
+      CacheService.getScriptCache().remove('fails_' + deviceId);
       return { name: String(rows[i][0]).trim() };
     }
   }
-  cache.put(devKey, String(devFails + 1), LOCKOUT_SECONDS);
-  cache.put('fails_all', String(globalFails + 1), LOCKOUT_SECONDS);
+  recordFail_(deviceId);
   throw new Error('Incorrect PIN.');
+}
+
+// Wrong PINs and wrong registration codes share the same lockout counters.
+function checkLockout_(deviceId) {
+  var cache = CacheService.getScriptCache();
+  if (Number(cache.get('fails_' + deviceId) || 0) >= MAX_FAILS || Number(cache.get('fails_all') || 0) >= MAX_FAILS_GLOBAL) {
+    throw new Error('Too many wrong attempts. Try again in a few minutes.');
+  }
+}
+
+function recordFail_(deviceId) {
+  var cache = CacheService.getScriptCache();
+  cache.put('fails_' + deviceId, String(Number(cache.get('fails_' + deviceId) || 0) + 1), LOCKOUT_SECONDS);
+  cache.put('fails_all', String(Number(cache.get('fails_all') || 0) + 1), LOCKOUT_SECONDS);
 }
 
 function logSheet_() {
