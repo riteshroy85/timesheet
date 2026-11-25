@@ -27,6 +27,8 @@
   /* Lock-screen style PIN entry */
   .card.login { background:transparent; box-shadow:none; max-width:320px; text-align:center; padding:24px 0; }
   .card.login h1 { font-size:1.5rem; margin-top:24px; }
+  .card.login input { text-align:center; margin:28px 0 0; }
+  #who { margin-top:6px; word-break:break-all; }
   .lock { width:44px; height:44px; margin:8px auto 0; color:var(--accent); }
   .dots { display:flex; justify-content:center; gap:18px; margin:28px 0 36px; min-height:14px; }
   .dots.shake { animation:shake .4s; }
@@ -73,10 +75,21 @@
     </svg>
     <h1>Timesheet</h1>
     <div class="muted" id="prompt">Enter your PIN</div>
+    <div class="muted" id="who"></div>
     <div class="dots" id="dots"></div>
     <div class="pad" id="pad"></div>
     <button class="unlock" id="unlock" disabled>Unlock</button>
     <button class="link" id="toRegister">First time? Register</button>
+    <button class="link" id="changeEmail">Not you? Use a different email</button>
+  </div>
+
+  <!-- Email step: shown only until this phone has signed in once -->
+  <div id="emailView" class="hidden">
+    <h1>Timesheet</h1>
+    <div class="muted">Enter your email to sign in</div>
+    <input type="email" id="emailInput" autocomplete="email" autocapitalize="none" maxlength="80" placeholder="name@company.com">
+    <button class="unlock" id="emailNext">Continue</button>
+    <button class="link" id="toRegister2">First time? Register</button>
   </div>
 
   <!-- First-time registration -->
@@ -93,7 +106,7 @@
     <label for="regCode">Registration code</label>
     <input type="text" id="regCode" autocapitalize="characters" autocomplete="off" maxlength="20">
 
-    <label for="regPin">Choose a PIN (4 to 8 digits)</label>
+    <label for="regPin">Choose a PIN (6 to 8 digits)</label>
     <input type="password" id="regPin" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
 
     <label for="regPin2">Confirm PIN</label>
@@ -138,6 +151,17 @@
   var PIN_LEN_MAX = 8;
   var pin = '';
   var $ = function (id) { return document.getElementById(id); };
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  // Remembered on this phone so staff only type their PIN next time (localStorage can be unavailable).
+  function store(key, value) {
+    try {
+      if (value === undefined) return localStorage.getItem(key) || '';
+      localStorage.setItem(key, value);
+    } catch (e) {}
+    return '';
+  }
+  var email = store('email');
 
   // Random per-device id, used only for wrong-PIN lockout.
   var deviceId = (function () {
@@ -196,6 +220,7 @@
   // text/plain keeps this a "simple" request, so the browser skips the CORS preflight Apps Script can't answer.
   function api(body) {
     body.pin = pin;
+    if (body.email === undefined) body.email = email;
     body.deviceId = deviceId;
     return fetch(API_URL, {
       method: 'POST',
@@ -215,35 +240,62 @@
     api({ action: 'login' }).then(enter).catch(function (e) { wrongPin(e.message); });
   }
 
-  // Switch between the login, register and entry screens.
+  // Switch between the email, PIN, register and entry screens.
   function show(view) {
-    ['loginView', 'registerView', 'formView'].forEach(function (v) { $(v).classList.toggle('hidden', v !== view); });
-    $('card').classList.toggle('login', view === 'loginView');
+    ['emailView', 'loginView', 'registerView', 'formView'].forEach(function (v) { $(v).classList.toggle('hidden', v !== view); });
+    $('card').classList.toggle('login', view === 'loginView' || view === 'emailView');
     msg('');
   }
 
+  // PIN keypad if this phone already knows the email, otherwise ask for the email first.
+  function showLogin() {
+    if (email) {
+      $('who').textContent = email;
+      show('loginView');
+    } else {
+      $('emailInput').value = '';
+      show('emailView');
+    }
+  }
+
+  function toEmailStep() { $('emailInput').value = email; show('emailView'); }
+  function toRegister() { pin = ''; drawDots(); $('regEmail').value = email; show('registerView'); }
+
+  $('emailNext').onclick = function () {
+    var v = $('emailInput').value.trim().toLowerCase();
+    if (!EMAIL_RE.test(v)) return msg('Enter a valid email address.', 'err');
+    email = v; pin = ''; drawDots();
+    $('who').textContent = email;
+    show('loginView');
+  };
+  $('emailInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('emailNext').click(); });
+  $('changeEmail').onclick = toEmailStep;
+
   function enter(r) {
+    store('email', email); // signed in: remember this email on the phone
     show('formView');
     $('hello').textContent = 'Hi, ' + r.name;
     $('date').value = r.entry.date;
     fill(r.entry);
   }
 
-  $('toRegister').onclick = function () { pin = ''; drawDots(); show('registerView'); };
-  $('toLogin').onclick = function () { show('loginView'); };
+  $('toRegister').onclick = toRegister;
+  $('toRegister2').onclick = toRegister;
+  $('toLogin').onclick = showLogin;
 
   $('registerBtn').onclick = function () {
     var p = $('regPin').value;
     if (!$('regName').value.trim()) return msg('Enter your name.', 'err');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('regEmail').value.trim())) return msg('Enter a valid email address.', 'err');
+    if (!EMAIL_RE.test($('regEmail').value.trim())) return msg('Enter a valid email address.', 'err');
     if (!$('regCode').value.trim()) return msg('Enter the registration code.', 'err');
-    if (!/^\d{4,8}$/.test(p)) return msg('PIN must be 4 to 8 digits.', 'err');
+    if (!/^\d{6,8}$/.test(p)) return msg('PIN must be 6 to 8 digits.', 'err');
     if (p !== $('regPin2').value) return msg('The two PINs do not match.', 'err');
     $('registerBtn').disabled = true;
     msg('Creating account…');
     api({ action: 'register', name: $('regName').value, email: $('regEmail').value, code: $('regCode').value, newPin: p })
       .then(function (r) {
         pin = p;  // signed in with the new PIN
+        email = $('regEmail').value.trim().toLowerCase();
         ['regName', 'regEmail', 'regCode', 'regPin', 'regPin2'].forEach(function (id) { $(id).value = ''; });
         enter(r);
       })
@@ -281,8 +333,10 @@
 
   $('logout').onclick = function () {
     pin = ''; drawDots();
-    show('loginView');
+    showLogin(); // the email stays remembered; only the PIN is asked again
   };
+
+  showLogin();
 
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function () {});
 </script>

@@ -12,15 +12,15 @@ Hosting the screen on GitHub Pages (instead of serving it from Apps Script) avoi
 1. Open your Google Sheet > **Extensions > Apps Script**.
 2. Replace `Code.gs` with [apps-script/Code.gs](apps-script/Code.gs). (No HTML file is needed in Apps Script.)
 3. Select `setup` in the toolbar and click **Run** (approve the permissions). This creates the `Users` and `Timesheet` tabs.
-4. Staff can register themselves, or you can add them by hand in `Users` as `Name | Email | PIN | TRUE` (leave PIN blank to let them set it). PINs must be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
+4. Staff can register themselves, or you can add them by hand in `Users` as `Name | Email | PIN | TRUE` (leave PIN blank to let them set it). PINs do not need to be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
 
 ### Self-registration
 
-On first use staff tap **First time? Register**, enter their name, **email**, the **registration code**, and choose their own 4 to 8 digit PIN.
+On first use staff tap **First time? Register**, enter their name, **email**, the **registration code**, and choose their own 6 to 8 digit PIN (change `PIN_MIN` / `PIN_MAX` at the top of `Code.gs` to adjust).
 
 - The code is in the `Settings` tab (cell B1), created by `setup`. Change it any time. Clear the cell to switch registration off.
 - Share the code only with your team. Anyone who has the code and the link can register.
-- Wrong codes count towards the same lockout as wrong PINs.
+- Wrong codes are counted separately from wrong PINs: 5 per phone, 30 in total, then registration pauses for 10 minutes.
 - **Forgotten PIN:** clear that person's PIN cell in `Users`. They register again with the same name and email and pick a new PIN, and their old timesheet rows stay attached.
 - An employee is identified by **name + email**. Email is the unique key and is stored in lower case. An email that already has a PIN can't be registered again, and if you pre-list an email, the name typed must match the one on file. Two people can share a name if their emails differ.
 - Re-running `setup` upgrades an older `Users` / `Timesheet` tab by inserting the Email column. Fill in the emails for existing people. Old timesheet rows with a blank email are no longer matched to anyone, so they won't show up in the app.
@@ -57,6 +57,7 @@ Note: a free GitHub account needs the repository to be **public** for Pages. The
 - After editing `Code.gs`, use **Deploy > Manage deployments > Edit > New version** (the URL stays the same).
 - The form takes Date, Start time, End time and total Break in hours (e.g. 0.75). Saving again for the same date overwrites that day's row.
 - Total Hrs = End - Start, In-Hrs = Total Hrs - Break.
-- 5 wrong PINs lock a device for 10 minutes; 30 wrong PINs across all devices lock everyone for 10 minutes.
+- **Signing in:** staff enter their email and PIN. The phone remembers the email (and keeps it after log out), so next time only the keypad shows. "Not you? Use a different email" changes it. The email is saved only after a successful sign-in or registration.
+- 5 wrong PINs lock that email for 10 minutes, whatever phone is used, and also lock that phone for 10 minutes. Other staff are unaffected. Wrong email and wrong PIN show the same message.
 - Times use the script's time zone (**Project Settings** in Apps Script). Check it is correct.
 - The app needs internet to save. Until you update `sw.js`'s cache name, phones may show a cached older screen once after an update.

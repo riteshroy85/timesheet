@@ -13,9 +13,11 @@
 var USERS_SHEET = 'Users';
 var LOG_SHEET = 'Timesheet';
 var SETTINGS_SHEET = 'Settings';
-var MAX_FAILS = 5;           // wrong PINs allowed per device...
-var MAX_FAILS_GLOBAL = 30;   // ...and across all devices, before locking out
+var MAX_FAILS = 5;           // wrong PINs allowed per email and per device before locking out...
+var MAX_FAILS_GLOBAL = 30;   // ...wrong registration codes allowed across all devices
 var LOCKOUT_SECONDS = 600;
+var PIN_MIN = 6;             // PIN length rules for new registrations
+var PIN_MAX = 8;
 
 // Timesheet column numbers
 var C = { NAME: 1, EMAIL: 2, DATE: 3, DAY: 4, START: 5, END: 6, BREAK: 7, TOTAL: 8, IN: 9 };
@@ -73,9 +75,9 @@ function doGet() {
 }
 
 /**
- * Body (JSON sent as text/plain): { action, pin, deviceId, ... }
+ * Body (JSON sent as text/plain): { action, email, pin, deviceId, ... }
  *   register : name, email, code, newPin -> { name, entry }  (no pin needed; creates or claims a user)
- *   login : -> { name, entry }                               (entry for today)
+ *   login : email + pin -> { name, entry }                   (entry for today; PINs need not be unique)
  *   get   : date                -> entry
  *   save  : date, start, end, breakHrs -> entry
  */
@@ -87,7 +89,7 @@ function doPost(e) {
       var created = register_(req, deviceId);
       return json_({ ok: true, data: { name: created.name, entry: entry_(created.email, today_()) } });
     }
-    var user = authenticate_(req.pin, deviceId);
+    var user = authenticate_(req.email, req.pin, deviceId);
     if (req.action === 'login') {
       return json_({ ok: true, data: { name: user.name, entry: entry_(user.email, today_()) } });
     } else if (req.action === 'get') {
@@ -112,20 +114,23 @@ function json_(obj) {
  * Returns { name, email }.
  */
 function register_(req, deviceId) {
-  checkLockout_(deviceId);
+  var keys = [['fails_d_' + deviceId, MAX_FAILS], ['fails_code', MAX_FAILS_GLOBAL]];
+  checkLockout_(keys);
 
   var name = String(req.name || '').replace(/\s+/g, ' ').trim();
   var email = String(req.email || '').trim().toLowerCase();
   var newPin = String(req.newPin || '').trim();
   if (!name || name.length > 40) throw new Error('Enter your name (up to 40 characters).');
   if (!EMAIL_RE.test(email) || email.length > 80) throw new Error('Enter a valid email address.');
-  if (!/^\d{4,8}$/.test(newPin)) throw new Error('PIN must be 4 to 8 digits.');
+  if (!new RegExp('^\\d{' + PIN_MIN + ',' + PIN_MAX + '}$').test(newPin)) {
+    throw new Error('PIN must be ' + PIN_MIN + ' to ' + PIN_MAX + ' digits.');
+  }
 
   var settings = SpreadsheetApp.getActive().getSheetByName(SETTINGS_SHEET);
   var code = settings ? String(settings.getRange('B1').getDisplayValue()).trim() : '';
   if (!code) throw new Error('Registration is switched off. Ask your admin.');
   if (String(req.code || '').trim().toUpperCase() !== code.toUpperCase()) {
-    recordFail_(deviceId);
+    recordFail_(keys);
     throw new Error('Incorrect registration code.');
   }
 
@@ -139,7 +144,6 @@ function register_(req, deviceId) {
       var rowName = String(rows[i][0]).trim();
       var rowEmail = String(rows[i][1]).trim().toLowerCase();
       var rowPin = String(rows[i][2]).trim();
-      if (rowPin === newPin) throw new Error('That PIN is already in use. Choose a different one.');
       if (rowEmail === email) {
         if (rowPin) throw new Error('This email is already registered. Ask your admin to reset your PIN.');
         if (rowName.toLowerCase() !== name.toLowerCase()) {
@@ -201,35 +205,47 @@ function save_(user, req) {
 
 // ---------- helpers ----------
 
-/** Looks the PIN up in Users and returns { name, email }. */
-function authenticate_(pin, deviceId) {
+/**
+ * Finds the user by email and checks the PIN. PINs need not be unique: the email picks the person.
+ * Returns { name, email }. A wrong email and a wrong PIN give the same error, so the app does not
+ * reveal which emails exist.
+ */
+function authenticate_(email, pin, deviceId) {
+  email = String(email || '').trim().toLowerCase();
   pin = String(pin || '').trim();
-  checkLockout_(deviceId);
+  var keys = [['fails_d_' + deviceId, MAX_FAILS], ['fails_e_' + email, MAX_FAILS]];
+  checkLockout_(keys);
 
   var rows = SpreadsheetApp.getActive().getSheetByName(USERS_SHEET).getDataRange().getDisplayValues();
   for (var i = 1; i < rows.length; i++) {
     var active = String(rows[i][3]).toUpperCase() !== 'FALSE';
-    if (active && pin && String(rows[i][2]).trim() === pin) {
-      CacheService.getScriptCache().remove('fails_' + deviceId);
-      return { name: String(rows[i][0]).trim(), email: String(rows[i][1]).trim().toLowerCase() };
+    var rowPin = String(rows[i][2]).trim();
+    if (email && active && rowPin && String(rows[i][1]).trim().toLowerCase() === email && rowPin === pin) {
+      clearFails_(keys);
+      return { name: String(rows[i][0]).trim(), email: email };
     }
   }
-  recordFail_(deviceId);
-  throw new Error('Incorrect PIN.');
+  recordFail_(keys);
+  throw new Error('Incorrect email or PIN.');
 }
 
-// Wrong PINs and wrong registration codes share the same lockout counters.
-function checkLockout_(deviceId) {
+// Lockout counters live in the script cache. keys is a list of [cacheKey, maxFails].
+function checkLockout_(keys) {
   var cache = CacheService.getScriptCache();
-  if (Number(cache.get('fails_' + deviceId) || 0) >= MAX_FAILS || Number(cache.get('fails_all') || 0) >= MAX_FAILS_GLOBAL) {
-    throw new Error('Too many wrong attempts. Try again in a few minutes.');
-  }
+  keys.forEach(function (k) {
+    if (Number(cache.get(k[0]) || 0) >= k[1]) throw new Error('Too many wrong attempts. Try again in a few minutes.');
+  });
 }
 
-function recordFail_(deviceId) {
+function recordFail_(keys) {
   var cache = CacheService.getScriptCache();
-  cache.put('fails_' + deviceId, String(Number(cache.get('fails_' + deviceId) || 0) + 1), LOCKOUT_SECONDS);
-  cache.put('fails_all', String(Number(cache.get('fails_all') || 0) + 1), LOCKOUT_SECONDS);
+  keys.forEach(function (k) {
+    cache.put(k[0], String(Number(cache.get(k[0]) || 0) + 1), LOCKOUT_SECONDS);
+  });
+}
+
+function clearFails_(keys) {
+  CacheService.getScriptCache().removeAll(keys.map(function (k) { return k[0]; }));
 }
 
 function logSheet_() {
