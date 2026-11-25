@@ -4,8 +4,8 @@
  *
  * Bound to a Google Sheet with two tabs:
  *   Users      : Name | PIN | Active (TRUE/FALSE)
- *   Timesheet  : Name | Date | Day | Start Time | End Time | Break | Total Hrs | In-Hrs   (created automatically)
- * Break is in minutes. Total Hrs = End - Start. In-Hrs = Total Hrs - Break.
+ *   Timesheet  : Name | Date | Day | Start Time | End Time | Break (hrs) | Total Hrs | In-Hrs   (created automatically)
+ * Break is in hours (e.g. 0.75). Total Hrs = End - Start. In-Hrs = Total Hrs - Break.
  */
 
 var USERS_SHEET = 'Users';
@@ -16,10 +16,12 @@ var LOCKOUT_SECONDS = 600;
 
 // Timesheet column numbers
 var C = { NAME: 1, DATE: 2, DAY: 3, START: 4, END: 5, BREAK: 6, TOTAL: 7, IN: 8 };
+var HEADERS = ['Name', 'Date', 'Day', 'Start Time', 'End Time', 'Break (hrs)', 'Total Hrs', 'In-Hrs'];
 
 /**
  * Run once from the Apps Script editor (select "setup" > Run) on a blank Sheet.
  * Creates the Users and Timesheet tabs with styled headers and a sample user.
+ * Safe to run again: it also refreshes the Timesheet header row.
  */
 function setup() {
   var ss = SpreadsheetApp.getActive();
@@ -31,7 +33,10 @@ function setup() {
     users.setFrozenRows(1);
   }
   styleHeader_(users.getRange(1, 1, 1, 3));
-  styleHeader_(logSheet_().getRange(1, 1, 1, 8));
+
+  var log = logSheet_();
+  log.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
+  styleHeader_(log.getRange(1, 1, 1, HEADERS.length));
 
   var blank = ss.getSheetByName('Sheet1');
   if (blank && blank.getLastRow() === 0) ss.deleteSheet(blank);
@@ -45,17 +50,24 @@ function doGet() {
   return ContentService.createTextOutput('Timesheet API is running.');
 }
 
-/** Body (JSON sent as text/plain): { action: 'login'|'record', pin, deviceId, kind?, value? } */
+/**
+ * Body (JSON sent as text/plain): { action, pin, deviceId, ... }
+ *   login : -> { name, entry }                      (entry for today)
+ *   get   : date                -> entry
+ *   save  : date, start, end, breakHrs -> entry
+ */
 function doPost(e) {
   var out;
   try {
     var req = JSON.parse(e.postData.contents);
     var deviceId = String(req.deviceId || '').slice(0, 64);
+    var user = authenticate_(req.pin, deviceId);
     if (req.action === 'login') {
-      var user = authenticate_(req.pin, deviceId);
-      out = { ok: true, data: { name: user.name, today: todayEntry_(user.name) } };
-    } else if (req.action === 'record') {
-      out = { ok: true, data: record_(req.pin, deviceId, req.kind, req.value) };
+      out = { ok: true, data: { name: user.name, entry: entry_(user.name, today_()) } };
+    } else if (req.action === 'get') {
+      out = { ok: true, data: entry_(user.name, checkDate_(req.date)) };
+    } else if (req.action === 'save') {
+      out = { ok: true, data: save_(user.name, req) };
     } else {
       throw new Error('Unknown action.');
     }
@@ -65,47 +77,41 @@ function doPost(e) {
   return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
 }
 
-/**
- * kind 'start' | 'end': value is 'HH:mm'.
- * kind 'break': value is whole minutes (0-600).
- */
-function record_(pin, deviceId, kind, value) {
-  var user = authenticate_(pin, deviceId);
-  var col;
-  if (kind === 'start' || kind === 'end') {
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) throw new Error('Invalid time.');
-    col = kind === 'start' ? C.START : C.END;
-  } else if (kind === 'break') {
-    value = Number(value);
-    if (!(value >= 0 && value <= 600) || value % 1 !== 0) throw new Error('Invalid break.');
-    col = C.BREAK;
-  } else {
-    throw new Error('Invalid action.');
+/** Writes (or overwrites) the user's row for the given date. End and break are optional. */
+function save_(name, req) {
+  var date = checkDate_(req.date);
+  var start = String(req.start || '');
+  var end = String(req.end || '');
+  var timeRe = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!timeRe.test(start)) throw new Error('Enter a valid start time.');
+  if (end && !timeRe.test(end)) throw new Error('Enter a valid end time.');
+
+  var brk = '';
+  if (req.breakHrs !== '' && req.breakHrs != null) {
+    brk = Number(req.breakHrs);
+    if (isNaN(brk) || brk < 0 || brk > 24) throw new Error('Break must be between 0 and 24 hours.');
+    brk = round2_(brk);
   }
+
+  var total = total_(start, end);
+  var inHrs = total === '' ? '' : Math.max(0, round2_(total - (brk || 0)));
+  if (total !== '' && brk > total) throw new Error('Break is longer than the time worked.');
 
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
     var sheet = logSheet_();
-    var now = new Date();
-    var tz = Session.getScriptTimeZone();
-    var date = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
-    var row = findRow_(sheet, date, user.name);
+    var row = findRow_(sheet, date, name);
     if (!row) {
-      sheet.appendRow([user.name, date, Utilities.formatDate(now, tz, 'EEEE'), '', '', '', '', '']);
+      sheet.appendRow([name, date, dayName_(date), '', '', '', '', '']);
       row = sheet.getLastRow();
     }
-    sheet.getRange(row, col).setValue(value);
-
-    var v = sheet.getRange(row, C.START, 1, 3).getDisplayValues()[0]; // start, end, break
-    var total = total_(v[0], v[1]);
-    sheet.getRange(row, C.TOTAL).setValue(total);
-    sheet.getRange(row, C.IN).setValue(total === '' ? '' : Math.max(0, round2_(total - (Number(v[2]) || 0) / 60)));
+    sheet.getRange(row, C.START, 1, 5).setValues([[start, end, brk, total, inHrs]]);
     SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
-  return todayEntry_(user.name);
+  return entry_(name, date);
 }
 
 // ---------- helpers ----------
@@ -138,12 +144,31 @@ function logSheet_() {
   var sheet = ss.getSheetByName(LOG_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(LOG_SHEET);
-    sheet.appendRow(['Name', 'Date', 'Day', 'Start Time', 'End Time', 'Break (min)', 'Total Hrs', 'In-Hrs']);
+    sheet.appendRow(HEADERS);
     sheet.setFrozenRows(1);
     sheet.getRange('A:E').setNumberFormat('@'); // keep text, dates and times as plain text
-    styleHeader_(sheet.getRange(1, 1, 1, 8));
+    styleHeader_(sheet.getRange(1, 1, 1, HEADERS.length));
   }
   return sheet;
+}
+
+function today_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+/** Returns the date if it is a real yyyy-MM-dd date; otherwise throws. */
+function checkDate_(date) {
+  date = String(date || '');
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) throw new Error('Pick a valid date.');
+  var d = new Date(+m[1], +m[2] - 1, +m[3], 12);
+  if (d.getMonth() !== +m[2] - 1) throw new Error('Pick a valid date.');
+  return date;
+}
+
+function dayName_(date) {
+  var p = date.split('-');
+  return Utilities.formatDate(new Date(+p[0], +p[1] - 1, +p[2], 12), Session.getScriptTimeZone(), 'EEEE');
 }
 
 function findRow_(sheet, date, name) {
@@ -154,13 +179,13 @@ function findRow_(sheet, date, name) {
   return 0;
 }
 
-function todayEntry_(name) {
-  var sheet = logSheet_();
-  var tz = Session.getScriptTimeZone();
-  var row = findRow_(sheet, Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd'), name);
-  if (!row) return { start: '', end: '', brk: '', total: '', inHrs: '' };
-  var v = sheet.getRange(row, C.START, 1, 5).getDisplayValues()[0];
-  return { start: v[0], end: v[1], brk: v[2], total: v[3], inHrs: v[4] };
+function entry_(name, date) {
+  var row = findRow_(logSheet_(), date, name);
+  var empty = { date: date, day: dayName_(date), start: '', end: '', brk: '', total: '', inHrs: '' };
+  if (!row) return empty;
+  var v = logSheet_().getRange(row, C.START, 1, 5).getDisplayValues()[0];
+  empty.start = v[0]; empty.end = v[1]; empty.brk = v[2]; empty.total = v[3]; empty.inHrs = v[4];
+  return empty;
 }
 
 function total_(start, end) {

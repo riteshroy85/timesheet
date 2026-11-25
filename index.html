@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="icon" href="icons/icon-192.png">
 <style>
-  :root { --bg:#f5f7fa; --card:#fff; --text:#1b1f24; --muted:#6a737d; --accent:#1f5c80; --ok:#1a7f37; --err:#cf222e; }
+  :root { --bg:#f5f7fa; --card:#fff; --text:#1b1f24; --muted:#6a737d; --accent:#1f5c80; --ok:#1a7f37; --err:#cf222e; --line:rgba(128,128,128,.35); }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e; --accent:#3a86b4; --ok:#3fb950; --err:#f85149; }
   }
@@ -27,21 +27,22 @@
   .dots { display:flex; justify-content:center; gap:12px; margin:20px 0; min-height:16px; }
   .dot { width:14px; height:14px; border-radius:50%; background:var(--accent); }
   .pad { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
-  .pad button { font-size:1.4rem; padding:16px 0; border-radius:12px; border:1px solid rgba(128,128,128,.3);
+  .pad button { font-size:1.4rem; padding:16px 0; border-radius:12px; border:1px solid var(--line);
                 background:transparent; color:var(--text); }
   .pad button:active { background:rgba(128,128,128,.2); }
-  .row { display:flex; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid rgba(128,128,128,.2); }
-  .row input { font-size:1.2rem; padding:6px; border-radius:8px; border:1px solid rgba(128,128,128,.4);
-               background:transparent; color:var(--text); }
-  .row input[type=number] { width:100px; text-align:right; }
-  .val { font-size:1.2rem; font-weight:600; }
-  .act { width:100%; padding:16px; margin-top:14px; font-size:1.05rem; font-weight:600; border:0; border-radius:12px;
-         background:var(--accent); color:#fff; }
-  .act.end { background:var(--ok); }
-  .act.brk { background:#8250df; }
-  .act:disabled { opacity:.5; }
-  .link { background:none; border:0; color:var(--muted); margin-top:16px; width:100%; padding:8px; }
-  #msg { min-height:1.3em; margin-top:12px; text-align:center; font-size:.9rem; }
+
+  label { display:block; margin-top:16px; font-size:.9rem; color:var(--muted); }
+  input { display:block; width:100%; margin-top:6px; font-size:1.2rem; padding:12px; border-radius:10px; border:1px solid var(--line);
+          background:transparent; color:var(--text); font-family:inherit; min-height:50px; }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .save { width:100%; padding:16px; margin-top:22px; font-size:1.1rem; font-weight:600; border:0; border-radius:12px;
+          background:var(--accent); color:#fff; }
+  .save:disabled { opacity:.5; }
+  .summary { margin-top:18px; padding:12px; border-radius:10px; background:rgba(128,128,128,.12); display:grid;
+             grid-template-columns:1fr 1fr; gap:8px; text-align:center; }
+  .summary b { display:block; font-size:1.3rem; }
+  .link { background:none; border:0; color:var(--muted); margin-top:12px; width:100%; padding:8px; }
+  #msg { min-height:1.3em; margin-top:12px; text-align:center; font-size:.95rem; }
   .err { color:var(--err); } .ok { color:var(--ok); }
   .hidden { display:none; }
 </style>
@@ -57,20 +58,29 @@
     <div class="pad" id="pad"></div>
   </div>
 
-  <!-- Day screen -->
-  <div id="dayView" class="hidden">
+  <!-- Entry form -->
+  <div id="formView" class="hidden">
     <h1 id="hello"></h1>
-    <div class="muted" id="today"></div>
-    <div class="row"><span>Start</span><span class="val" id="startVal">--:--</span></div>
-    <div class="row"><span>End</span><span class="val" id="endVal">--:--</span></div>
-    <div class="row"><span>Break</span><span class="val" id="breakVal">--</span></div>
-    <div class="row"><span>Total hrs</span><span class="val" id="totalVal">--</span></div>
-    <div class="row"><span>In-hrs</span><span class="val" id="inVal">--</span></div>
-    <div class="row"><span class="muted">Time to record</span><input type="time" id="timeInput"></div>
-    <button class="act" id="startBtn">Record start time</button>
-    <button class="act end" id="endBtn">Record end time</button>
-    <div class="row"><span class="muted">Break (minutes)</span><input type="number" id="breakInput" min="0" max="600" step="5" inputmode="numeric" placeholder="e.g. 45"></div>
-    <button class="act brk" id="breakBtn">Save break</button>
+    <div class="muted">Enter your hours for the day</div>
+
+    <label for="date">Date</label>
+    <input type="date" id="date">
+
+    <div class="two">
+      <div><label for="start">Start time</label><input type="time" id="start"></div>
+      <div><label for="end">End time</label><input type="time" id="end"></div>
+    </div>
+
+    <label for="brk">Total break (hours)</label>
+    <input type="number" id="brk" min="0" max="24" step="0.25" inputmode="decimal" placeholder="e.g. 0.5 or 1.25">
+
+    <button class="save" id="saveBtn">Save</button>
+
+    <div class="summary" id="summary">
+      <div><span class="muted">Total hrs</span><b id="totalVal">--</b></div>
+      <div><span class="muted">In-hrs</span><b id="inVal">--</b></div>
+    </div>
+
     <button class="link" id="logout">Log out</button>
   </div>
 
@@ -78,7 +88,6 @@
 </div>
 
 <script>
-  // Paste the Apps Script web app URL (ends in /exec) here after deploying.
   var API_URL = 'https://script.google.com/macros/s/AKfycbw1GHL3Ab7kp4SXshq3K42XZ2SRCbqjolfxHniZMwBYQ-Odcd27BWuUxaMOowmmLDJ_XQ/exec';
 
   var PIN_LEN_MAX = 8;
@@ -116,10 +125,6 @@
   }
 
   function msg(text, cls) { $('msg').textContent = text || ''; $('msg').className = cls || ''; }
-  function nowHHmm() {
-    var d = new Date();
-    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
-  }
 
   // ---- API ----
   // text/plain keeps this a "simple" request, so the browser skips the CORS preflight Apps Script can't answer.
@@ -141,44 +146,47 @@
   function submitPin() {
     if (!pin) return;
     msg('Checking…');
-    api({ action: 'login' }).then(function (r) { msg(''); showDay(r); })
-      .catch(function (e) { pin = ''; drawDots(); msg(e.message, 'err'); });
+    api({ action: 'login' }).then(function (r) {
+      msg('');
+      $('loginView').classList.add('hidden');
+      $('formView').classList.remove('hidden');
+      $('hello').textContent = 'Hi, ' + r.name;
+      $('date').value = r.entry.date;
+      fill(r.entry);
+    }).catch(function (e) { pin = ''; drawDots(); msg(e.message, 'err'); });
   }
 
-  function showDay(r) {
-    $('loginView').classList.add('hidden');
-    $('dayView').classList.remove('hidden');
-    $('hello').textContent = 'Hi, ' + r.name;
-    $('today').textContent = new Date().toDateString();
-    $('timeInput').value = nowHHmm();
-    render(r.today);
-  }
-  function render(t) {
-    $('startVal').textContent = t.start || '--:--';
-    $('endVal').textContent = t.end || '--:--';
-    $('breakVal').textContent = t.brk === '' ? '--' : t.brk + ' min';
-    $('totalVal').textContent = t.total === '' ? '--' : t.total;
-    $('inVal').textContent = t.inHrs === '' ? '--' : t.inHrs;
-    if (t.brk !== '') $('breakInput').value = t.brk;
+  function fill(en) {
+    $('start').value = en.start;
+    $('end').value = en.end;
+    $('brk').value = en.brk;
+    $('totalVal').textContent = en.total === '' ? '--' : en.total;
+    $('inVal').textContent = en.inHrs === '' ? '--' : en.inHrs;
   }
 
-  function setBusy(b) { $('startBtn').disabled = $('endBtn').disabled = $('breakBtn').disabled = b; }
+  // Changing the date loads whatever was already saved for that day.
+  $('date').onchange = function () {
+    if (!$('date').value) return;
+    msg('Loading…');
+    api({ action: 'get', date: $('date').value })
+      .then(function (en) { fill(en); msg(''); })
+      .catch(function (e) { msg(e.message, 'err'); });
+  };
 
-  function record(kind, value) {
-    if (value === '' || value == null) return msg(kind === 'break' ? 'Enter break minutes.' : 'Pick a time first.', 'err');
-    setBusy(true);
+  $('saveBtn').onclick = function () {
+    if (!$('date').value) return msg('Pick a date.', 'err');
+    if (!$('start').value) return msg('Enter a start time.', 'err');
+    $('saveBtn').disabled = true;
     msg('Saving…');
-    api({ action: 'record', kind: kind, value: value })
-      .then(function (t) { render(t); msg('Saved ✓', 'ok'); })
+    api({ action: 'save', date: $('date').value, start: $('start').value, end: $('end').value, breakHrs: $('brk').value })
+      .then(function (en) { fill(en); msg('Saved ✓', 'ok'); })
       .catch(function (e) { msg(e.message, 'err'); })
-      .then(function () { setBusy(false); });
-  }
-  $('startBtn').onclick = function () { record('start', $('timeInput').value); };
-  $('endBtn').onclick = function () { record('end', $('timeInput').value); };
-  $('breakBtn').onclick = function () { record('break', $('breakInput').value); };
+      .then(function () { $('saveBtn').disabled = false; });
+  };
+
   $('logout').onclick = function () {
     pin = ''; drawDots(); msg('');
-    $('dayView').classList.add('hidden');
+    $('formView').classList.add('hidden');
     $('loginView').classList.remove('hidden');
   };
 

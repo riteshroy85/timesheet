@@ -44,7 +44,8 @@ Note: a free GitHub account needs the repository to be **public** for Pages. The
 ## Notes
 
 - After editing `Code.gs`, use **Deploy > Manage deployments > Edit > New version** (the URL stays the same).
-- Break is entered in minutes. Total Hrs = End - Start, In-Hrs = Total Hrs - Break.
+- The form takes Date, Start time, End time and total Break in hours (e.g. 0.75). Saving again for the same date overwrites that day's row.
+- Total Hrs = End - Start, In-Hrs = Total Hrs - Break.
 - 5 wrong PINs lock a device for 10 minutes; 30 wrong PINs across all devices lock everyone for 10 minutes.
 - Times use the script's time zone (**Project Settings** in Apps Script). Check it is correct.
 - The app needs internet to save. Until you update `sw.js`'s cache name, phones may show a cached older screen once after an update.
