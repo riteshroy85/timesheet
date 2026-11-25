@@ -12,17 +12,18 @@ Hosting the screen on GitHub Pages (instead of serving it from Apps Script) avoi
 1. Open your Google Sheet > **Extensions > Apps Script**.
 2. Replace `Code.gs` with [apps-script/Code.gs](apps-script/Code.gs). (No HTML file is needed in Apps Script.)
 3. Select `setup` in the toolbar and click **Run** (approve the permissions). This creates the `Users` and `Timesheet` tabs.
-4. Staff can register themselves, or you can add them by hand in `Users` as `Name | PIN | TRUE`. PINs must be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
+4. Staff can register themselves, or you can add them by hand in `Users` as `Name | Email | PIN | TRUE` (leave PIN blank to let them set it). PINs must be unique; `FALSE` disables someone. Delete the sample row. Keep this sheet's sharing restricted.
 
 ### Self-registration
 
-On first use staff tap **First time? Register**, enter their name, the **registration code**, and choose their own 4 to 8 digit PIN.
+On first use staff tap **First time? Register**, enter their name, **email**, the **registration code**, and choose their own 4 to 8 digit PIN.
 
 - The code is in the `Settings` tab (cell B1), created by `setup`. Change it any time. Clear the cell to switch registration off.
 - Share the code only with your team. Anyone who has the code and the link can register.
 - Wrong codes count towards the same lockout as wrong PINs.
-- **Forgotten PIN:** clear that person's PIN cell in `Users`. They register again with the same name and pick a new PIN, and their old timesheet rows stay attached.
-- A name that already has a PIN can't be registered again, so one person can't take over another's account.
+- **Forgotten PIN:** clear that person's PIN cell in `Users`. They register again with the same name and email and pick a new PIN, and their old timesheet rows stay attached.
+- An employee is identified by **name + email**. Email is the unique key and is stored in lower case. An email that already has a PIN can't be registered again, and if you pre-list an email, the name typed must match the one on file. Two people can share a name if their emails differ.
+- Re-running `setup` upgrades an older `Users` / `Timesheet` tab by inserting the Email column. Fill in the emails for existing people. Old timesheet rows with a blank email are no longer matched to anyone, so they won't show up in the app.
 5. **Deploy > New deployment > Web app**: Execute as **Me**, Who has access **Anyone**. Copy the URL (ends in `/exec`).
 
 ## 2. Put the URL in the screen

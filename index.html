@@ -87,6 +87,9 @@
     <label for="regName">Your name</label>
     <input type="text" id="regName" autocomplete="name" maxlength="40">
 
+    <label for="regEmail">Email</label>
+    <input type="email" id="regEmail" autocomplete="email" autocapitalize="none" maxlength="80">
+
     <label for="regCode">Registration code</label>
     <input type="text" id="regCode" autocapitalize="characters" autocomplete="off" maxlength="20">
 
@@ -232,15 +235,16 @@
   $('registerBtn').onclick = function () {
     var p = $('regPin').value;
     if (!$('regName').value.trim()) return msg('Enter your name.', 'err');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($('regEmail').value.trim())) return msg('Enter a valid email address.', 'err');
     if (!$('regCode').value.trim()) return msg('Enter the registration code.', 'err');
     if (!/^\d{4,8}$/.test(p)) return msg('PIN must be 4 to 8 digits.', 'err');
     if (p !== $('regPin2').value) return msg('The two PINs do not match.', 'err');
     $('registerBtn').disabled = true;
     msg('Creating account…');
-    api({ action: 'register', name: $('regName').value, code: $('regCode').value, newPin: p })
+    api({ action: 'register', name: $('regName').value, email: $('regEmail').value, code: $('regCode').value, newPin: p })
       .then(function (r) {
         pin = p;  // signed in with the new PIN
-        ['regName', 'regCode', 'regPin', 'regPin2'].forEach(function (id) { $(id).value = ''; });
+        ['regName', 'regEmail', 'regCode', 'regPin', 'regPin2'].forEach(function (id) { $(id).value = ''; });
         enter(r);
       })
       .catch(function (e) { msg(e.message, 'err'); })
